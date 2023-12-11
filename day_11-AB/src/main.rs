@@ -10,17 +10,19 @@ use std::io;
 // Solver for this particular problem
 
 struct Solver {
-    total: i32,
-    galaxies: Vec<(i32,i32)>,  // coordinates (x,y)
-    current_y : i32,
-    max_x: i32,
-    max_y: i32,
+    expansion_factor: i64,
+    total: i64,
+    galaxies: Vec<(i64,i64)>,  // coordinates (x,y)
+    current_y : i64,
+    max_x: i64,
+    max_y: i64,
 }
 
 impl Solver {
-    fn new() -> Self {
-        Self{total : 0,
-             galaxies : Vec::<(i32,i32)>::new(),
+    fn new(factor: i64) -> Self {
+        Self{expansion_factor : factor,
+             total : 0,
+             galaxies : Vec::<(i64,i64)>::new(),
              current_y : 0,
              max_x : 0,
              max_y : 0,
@@ -45,7 +47,7 @@ impl Solver {
         self.current_y += 1;
     }
 
-    fn integral_distance(g1: &(i32,i32), g2: &(i32,i32)) -> i32 {
+    fn integral_distance(g1: &(i64,i64), g2: &(i64,i64)) -> i64 {
         // The "shortest distance using only up/down/left/right"
         // is simply the Manhattan distance (giving "Diamond" circles topology)
         return (g1.0 - g2.0).abs() + (g1.1 - g2.1).abs();
@@ -64,17 +66,18 @@ impl Solver {
         // Add "1" to the X coordinate of all galaxies that are
         // on the right of an empty space column, for each of those columns.
         // Map this +1.. +2... +3 of each column in the following vectors
-        // accumulatinf all expansions:
+        // accumulating all expansions:
+        // Use the actual expansion factor instead of just 1
 
-        let mut expansion_x = Vec::<i32>::new();
-        let mut expansion_y = Vec::<i32>::new();
+        let mut expansion_x = Vec::<i64>::new();
+        let mut expansion_y = Vec::<i64>::new();
         expansion_x.push(0);
         expansion_y.push(0);
 
         for n in 0..empty_x.len() {
             let dx;
             if empty_x[n] {
-                dx = 1;
+                dx = self.expansion_factor;
             } else {
                 dx = 0;
             }
@@ -84,7 +87,7 @@ impl Solver {
         for n in 0..empty_y.len() {
             let dy;
             if empty_y[n] {
-                dy = 1;
+                dy = self.expansion_factor;
             } else {
                 dy = 0;
             }
@@ -121,10 +124,15 @@ impl Solver {
     }
 }
 
-/* common to all problems */
 fn main() {
 
-    let mut s = Solver::new();
+    // For problem 1:
+    //let mut s = Solver::new(2 - 1);
+    // For problem 2, example "100 times larger"
+    //let mut s = Solver::new(100 - 1);
+
+    // For final  problem 2:
+    let mut s = Solver::new(1000_000 - 1);
 
     let mut input = String::new();
     loop {
