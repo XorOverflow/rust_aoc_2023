@@ -29,6 +29,16 @@ use std::io;
  * the get_single_bitflip_reflected() find the reflexion axis directly
  * by looking for a single difference and doesn't even note where the difference
  * is exactly.
+ *
+ * P.S. : after reading some comments on reddit of people tricked by
+ * the possibility that the solution to part-1 may still be valid after
+ * the bitflip is corrected (because it is in a line/column ignored by the
+ * "not maching any row" rule) and it had to be explicitly excluded:
+ * I note that I didn't even think about that and the current algo
+ * automatically avoid this case by return success only when the mirror
+ * test is "exact + 1 single difference" (and not "is exact after flipping one
+ * bit somewhere, which may or may not be in the covered reflection")
+ * which automatically excludes the solution from part-1
  */
 
 
