@@ -5,8 +5,7 @@ https://adventofcode.com/2023/day/14
 
 use std::io;
 use std::ops::Range;
-use std::collections::HashSet;
-
+use std::env::Args;
 /*
 
 A naive Algo to roll boulders until they block would
@@ -49,7 +48,35 @@ for easier processing.
 */
 
 
+/* 
+ Actual Part 2 : Do N/W/S/E titling 1 BILLION TIMES
+ - I would have imagined that it would converge at some point
+   to a stable configuration, but no. Instead it enters a ...
+   cycle of loads value after around 85 tilt cycles, with
+   a cycle length of 11 (in my input sample) or 21.
+The sample input in the puzzle has a cycle of length 8
 
+Once the cycle is detected it's only a matter of doing 
+(1 BILLION - cycle start) modulo cycle_length
+to pick the correct value.
+
+Cycle detection consists of finding our last computed state
+somewhere in the previous cycles. As each state derive
+mechanically from the previous one, if we have 
+State(n) == State(p), then for any i
+State(n+i) == State(p+i).
+
+We can't just compare the numerical "load" value because
+different boulder map configuration may lead to the same
+total value, so state must include the exact map data
+(or a robust hash) (or just a simple xor of the map, this seems
+to work...)
+
+
+However it looks like my algo found a cycle of length 22 instead of visually
+11, but the load values are the same and duplicated, so no actual difference
+even if the binary map state seems different ?
+*/
 
 
 // Used only for initial parsing.
@@ -249,8 +276,9 @@ impl Solver {
 
         tilted
     }
-                                    
-    fn postprocess(&mut self) {
+
+    // Perform only tilt to north once.
+    fn postprocess_part_1(&mut self) {
         // Perform Tilting.
         // Part 1 : Tilting to north means using the transposed (vertical) map
         // and tilt to 0.
@@ -269,10 +297,79 @@ impl Solver {
             self.total += coefficient * boulder_row_count;
         }
     }
+
+
+    // Do the 4 tilts N -> W -> S -> E.
+    fn cycle_four_directions(&mut self) {
+        let tilted_north = Self::tilt_bouldermap_to_direction(&self.vbmap, &self.vrmap, true);
+        self.vbmap = tilted_north;
+        self.hbmap = Self::transpose_bouldermap(&self.vbmap);
+
+        let tilted_west = Self::tilt_bouldermap_to_direction(&self.hbmap, &self.hrmap, true);
+        self.hbmap = tilted_west;
+        self.vbmap = Self::transpose_bouldermap(&self.hbmap);
+
+        let tilted_south = Self::tilt_bouldermap_to_direction(&self.vbmap, &self.vrmap, false);
+        self.vbmap = tilted_south;
+        self.hbmap = Self::transpose_bouldermap(&self.vbmap);
+
+        let tilted_east = Self::tilt_bouldermap_to_direction(&self.hbmap, &self.hrmap, false);
+        self.hbmap = tilted_east;
+        self.vbmap = Self::transpose_bouldermap(&self.hbmap);
+
+    }
+
+
+    fn postprocess_part_2(&mut self) {
+
+        // Use hashing of map value and load total
+        let mut previous_states = Vec::<(i64,u128)>::new();
+        let debug = false;
+        for k in 1..2000 {
+            self.cycle_four_directions();
+            //eprintln!("Cycle tilt map: (rows) {:?}", self.hbmap);
+
+            let mut load:i64 = 0;
+            // compute only the North load as usual
+            for line in 0..self.hrmap.len() {
+                let coefficient = (self.hrmap.len() - line) as i64; // 1-indexing and not 0-indexin
+                let boulder_row_count = self.hbmap[line].count_ones() as i64;
+                //eprintln!("There are {boulder_row_count} at row {line} (x{coefficient})");
+                load += coefficient * boulder_row_count;
+            }
+            let computed_state:u128 = 
+                self.hbmap.iter().fold(0, |acc, v| acc ^ v);
+
+            eprintln!("Load after {k} cycles: {load}, bstate = {:#x}", computed_state);
+
+            // There are a LOT of potential off-by-one errors between the vector indexing by 0,
+            // and the cycle number by 1.
+            if let Some(i) =  previous_states.iter().position(|&v| v.0 == load && v.1 == computed_state) {
+                // cycle detected
+
+                 // i from Vec is 0-index, we want cycles to start at 1
+                let cycle_start = i+1;
+                let current_i = previous_states.len()+1;
+                let cycle_len = current_i - cycle_start;
+
+                eprintln!("found possible cycle starting at {cycle_start}, len {cycle_len} for value {load}");
+
+                // find modulo for 1 BILLION
+                let index_for_billion = cycle_start + (1_000_000_000 - cycle_start) % cycle_len;
+                eprintln!("Load for Billionth iterationis at cycle[{}] = {}", index_for_billion, previous_states[index_for_billion - 1].0);
+                self.total = previous_states[index_for_billion - 1].0;
+                if !debug {
+                    return;
+                }
+            }
+            previous_states.push((load,computed_state));
+        }
+        eprintln!("WARNING ! cycle not found for this test case.");
+    }
+
     
     // Returns the final string of expected output
     fn result(&mut self) -> String {
-        self.postprocess();
         self.total.to_string()
     }
 }
@@ -283,6 +380,14 @@ fn main() {
     let mut s = Solver::new();
     s.process();
 
+    if let Some(_) = std::env::args().find(|s| s == "-2") {
+        eprintln!("doing part 2");
+        s.postprocess_part_2();
+    } else {
+        eprintln!("doing part 1");
+        s.postprocess_part_1();
+    }
+    
     println!("{}", s.result());
 
 }
