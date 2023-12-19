@@ -35,12 +35,18 @@ impl Parts {
 	    ratings:ratings,
 	}
     }
-    
+
+    // return the numeric value for a rating name
     fn get(&self, c:char) -> Option<i32> {
 	match self.ratings.get(&c) {
 	    None => None,
 	    Some(&v) => Some(v),
 	}
+    }
+
+    // sum all ratings
+    fn ratings_sum(&self) -> i32 {
+	self.ratings.iter().fold(0, |acc, v| acc+*v.1)
     }
 }
 
@@ -198,7 +204,24 @@ impl Solver {
             input = String::from("");
         }
 	eprintln!("Parsed {} parts", parts.len());
-	
+
+
+	// solve parts
+	for p in &parts {
+	    // starting workflow
+	    let mut next_wf: &str = "in";
+	    while next_wf != "A" && next_wf != "R" {
+		let wf = workflows.get(next_wf).expect("Workflow names recursion should always be valid!");
+		next_wf = wf.apply(p);
+	    }
+	    if next_wf == "A" {
+		let partsum = p.ratings_sum();
+		eprintln!("Part is accepted with +r = {partsum}");
+		self.total += partsum;
+	    } else {
+		eprintln!("Part is rejected");
+	    }
+	}
     }
 
 
