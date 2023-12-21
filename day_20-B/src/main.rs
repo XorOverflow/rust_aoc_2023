@@ -28,17 +28,31 @@ In particular the final modules path I have are of the form (in reverse order)
 
 RX  <-- &bq <--- { &vg            <-- &lx  <-- { many lx sources}
                       {many more} <-/  
-                 { &kp  <-- &db
-                 { &gc  <-- &qz
-                 { &tx  <-- &sd
+                 { &kp            <-- &db
+                 { &gc            <-- &qz
+                 { &tx            <-- &sd
                 
 So RX receives LOW only when bq receives HIGH from the 4 others;
-the 4 others have a single input so they send HIGH only when their
+the 4 others (vg,kp,gc,tx) have a single input so they send HIGH only when their
 input is LOW (from lx, db, qz, sd)
 
 Algo will search from RX the first set of 4 conjunction modules,
 then run_button() in loop until a cycle is found for each of those
 modules state/output.
+
+
+
+The next comments are based on the LAST pulse sent before end of cycle.
+THis gives the wrong state because all final conjunction nodes reset to a different pulse after sending their "true" pulse once, so the last state
+does not give the pulse received by rx predecessors.
+Additionnaly, checking if the conj.node sent a Low pulse "anytime" before
+the end also gives useless data because they always send something: the
+problem is that it's not at the same time as others.
+
+So the current algo is hopeless as is. Only method seems to analyze by
+hand the circuit and get the adder/carry/12bits counter implemented
+and fake it.
+
 
 lx/db/qz/sd never sent any LOW pulse during the first 100K iterations.
 So the cycle detection instead must be pushed one level deeper:
@@ -74,7 +88,7 @@ use ModuleType::*;
 struct Module {
     mtype: ModuleType,
     destinations: Vec<String>,
-    last_sent: Pulse, // last value of sent pulse
+    sent_high_once: bool, // sent a HIGH pulse once this cycle (may not be the last sent)
 }
 
 impl Module {
@@ -82,7 +96,7 @@ impl Module {
 	Self {
 	    mtype: Broadcaster,
 	    destinations: dest,
-	    last_sent: LOW,
+	    sent_high_once: false,
 	}
     }
 
@@ -90,7 +104,7 @@ impl Module {
 	Self {
 	    mtype: FlipFlop(false),
 	    destinations: dest,
-	    last_sent: LOW,
+	    sent_high_once: false,
 	}
     }
 
@@ -98,7 +112,7 @@ impl Module {
 	Self {
 	    mtype: Conjunction(HashMap::<String,Pulse>::new()),
 	    destinations: dest,
-	    last_sent: LOW,
+	    sent_high_once: false,
 	}
     }
 
@@ -112,7 +126,9 @@ impl Module {
     // update last_sent
     // returns the ordered list of the output pulses to destinations.
     fn send_destinations(&mut self, pulse: Pulse) -> Vec<(String, Pulse)> {
-	self.last_sent = pulse;
+	if pulse == HIGH {
+	    self.sent_high_once = true;
+	}
 	self.destinations.iter().map(|n| (n.clone(), pulse)).collect()
     }
     // Process an input pulse.
@@ -136,6 +152,11 @@ impl Module {
 	    }
 	}
     }
+
+    // Reset the "sent_high_once" for this new cycle
+    fn reset_stats(&mut self) {
+	self.sent_high_once = false;
+    }
 }
 
 
@@ -145,6 +166,7 @@ impl Module {
 // Note this may lead to visual false negatives for cycles
 // if the cycle length is not divisible by 4.
 fn print_bool_vec(a: &Vec<bool>) {
+    let charmap = &".123abcdABCD*%$#";
     eprint!("{}x[", a.len());
     for v in a.chunks_exact(4) {
 	let bits:u8 =
@@ -152,7 +174,7 @@ fn print_bool_vec(a: &Vec<bool>) {
 	    + (2 * v[1] as u8)
 	    + (4 * v[2] as u8)
 	    + (8 * v[3] as u8);
-	eprint!("{}", bits);
+	eprint!("{}", &charmap[bits as usize..1+bits as usize]);
     }
     eprintln!("]");
 }
@@ -179,8 +201,9 @@ fn find_smallest_cycle(a: &Vec<bool>, maxstart: usize) -> Option<(usize, usize)>
 	// iterate over the other chunks.
 	for check in a.rchunks_exact(size).skip(1) {
 	    check_offset += size;
+	    //eprintln!("comparing {:?} and {:?}", candidate, check);
 	    if check != candidate {
-		//eprintln!("found difference on size {size}, at offset -{check_offset}");
+		eprintln!("found difference on size {size}, at offset -{check_offset}");
 		if max - check_offset > maxstart {
 		    ok = false;
 		} else {
@@ -309,18 +332,22 @@ impl Network {
 	// db sources: all are cycle size 3929 starting at 354
 	//let monitor = self.find_rx_senders(&"db".to_string());
 
-	let monitor = self.find_rx_senders(&"TEST".to_string());
+	//let monitor = self.find_rx_senders(&"TEST".to_string());
+
+	let monitor = self.find_rx_senders(&"rx".to_string());
 
 	let mut monitor_history = Vec::<Vec::<Pulse>>::new();
 	for _ in &monitor {
 	    monitor_history.push(Vec::<Pulse>::new());
 	}
 
-	let mut last_sent_low = false;
-	let mut last_sent_high = false;
 	// "dl" and "lh" are constant false in the first 1000 iters;
 	// need to reach higher to get first very large cycles
-	for k in 1..20000 {
+	for k in 1..11000 {
+	    for (_,m) in self.modules.iter_mut() {
+		m.reset_stats();
+	    }
+
 	    let converge = self.run_button();
 	    if (k % 1000) == 0 {
 		eprintln!("#{k} run converged in {converge} iterations");
@@ -328,29 +355,19 @@ impl Network {
 	    let mut h_idx = 0;
 	    for m in &monitor {
 		let m = self.modules.get(m).expect("Named module should be found in the network");
-		monitor_history[h_idx].push(m.last_sent);
-		if m.last_sent == LOW {
-		    last_sent_low = true;
-		}
-		if m.last_sent == HIGH {
-		    last_sent_high = true;
-		}
-
-
+		monitor_history[h_idx].push(m.sent_high_once);
 		h_idx += 1;
 	    }
 	}
 
-	if last_sent_high {
-	    for (idx, name) in monitor.iter().enumerate() {
-		let h = &monitor_history[idx];
-		eprintln!("state history of {name}:");
-		//print_bool_vec(h);
-		find_smallest_cycle(h, 5000);
-	    }
-	} else {
-	    eprintln!("*** There has never been any single LOW/HIGH pulse sent by the monitored modules");
+
+	for (idx, name) in monitor.iter().enumerate() {
+	    let h = &monitor_history[idx];
+	    eprintln!("state history of {name}:");
+	    print_bool_vec(h);
+	    find_smallest_cycle(h, 5000);
 	}
+
     }
 
 }
