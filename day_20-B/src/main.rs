@@ -4,11 +4,59 @@ https://adventofcode.com/2023/day/20
  */
 
 
+/*
+Iterating until RX receives the correct input doesn't work.
+RX always receives 0 LOW and 4..10 HIGH for MANY iterations
+It receive input from several & nodes, which themselves receives from &
+so there is a lot of stages that need to align.
+
+With all those & and ~ it looks a bit like a SAT problem, with added 
+feedback-loop to make it more fun. 
+But I don't think it can really be answered with a SAT solver.
+
+Instead, do a bit like Day 14 part 2:
+find the cycles for each of the individual & inputs,
+and compute the lowest common denominator
+
+*/
+
+/*
+This solution is based on the particular individual input data
+I got, clearly not generalizable to any arbitrary turing-complete state-machine.
+
+In particular the final modules path I have are of the form (in reverse order)
+
+RX  <-- &bq <--- { &vg            <-- &lx  <-- { many lx sources}
+                      {many more} <-/  
+                 { &kp  <-- &db
+                 { &gc  <-- &qz
+                 { &tx  <-- &sd
+                
+So RX receives LOW only when bq receives HIGH from the 4 others;
+the 4 others have a single input so they send HIGH only when their
+input is LOW (from lx, db, qz, sd)
+
+Algo will search from RX the first set of 4 conjunction modules,
+then run_button() in loop until a cycle is found for each of those
+modules state/output.
+
+lx/db/qz/sd never sent any LOW pulse during the first 100K iterations.
+So the cycle detection instead must be pushed one level deeper:
+* LX sends LOW only when all the { many lx sources } send HIGH
+  => find cycles in { many lx source } = { lg, gf, bm, cp, xm, kh, lh, dl, zx, gb }
+* The same for { many db sources }  = { vv, sp, bh, kr, xz, qf, mq, zs }
+* same for gc sources, tx sources
+
+Until we finaly get LCM { LCM{lx sources}, LCM{DB sources}, LCM{GC sources}, LCM{TX sources}}
+
+ */
+
 use std::io;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
 // We'll map short pulse to false, long pulse to true
+// (Could have been an enum, initial idea was not to have any custom symbol)
 type Pulse = bool;
 const LOW:Pulse = false;
 const HIGH:Pulse = true;
@@ -26,6 +74,7 @@ use ModuleType::*;
 struct Module {
     mtype: ModuleType,
     destinations: Vec<String>,
+    last_sent: Pulse, // last value of sent pulse
 }
 
 impl Module {
@@ -33,6 +82,7 @@ impl Module {
 	Self {
 	    mtype: Broadcaster,
 	    destinations: dest,
+	    last_sent: LOW,
 	}
     }
 
@@ -40,6 +90,7 @@ impl Module {
 	Self {
 	    mtype: FlipFlop(false),
 	    destinations: dest,
+	    last_sent: LOW,
 	}
     }
 
@@ -47,6 +98,7 @@ impl Module {
 	Self {
 	    mtype: Conjunction(HashMap::<String,Pulse>::new()),
 	    destinations: dest,
+	    last_sent: LOW,
 	}
     }
 
@@ -57,8 +109,10 @@ impl Module {
 	}
     }
 
+    // update last_sent
     // returns the ordered list of the output pulses to destinations.
     fn send_destinations(&mut self, pulse: Pulse) -> Vec<(String, Pulse)> {
+	self.last_sent = pulse;
 	self.destinations.iter().map(|n| (n.clone(), pulse)).collect()
     }
     // Process an input pulse.
@@ -84,6 +138,72 @@ impl Module {
     }
 }
 
+
+
+// Utility debug function. For compact representation of many bools,
+// use numbers to display 4 bits at a time.
+// Note this may lead to visual false negatives for cycles
+// if the cycle length is not divisible by 4.
+fn print_bool_vec(a: &Vec<bool>) {
+    eprint!("{}x[", a.len());
+    for v in a.chunks_exact(4) {
+	let bits:u8 =
+	      (1 * v[0] as u8)
+	    + (2 * v[1] as u8)
+	    + (4 * v[2] as u8)
+	    + (8 * v[3] as u8);
+	eprint!("{}", bits);
+    }
+    eprintln!("]");
+}
+
+// Find a cycle in the pattern.
+// Begining of array may not have stabilized so returns the pair
+// (start of cycle, cycle length), the caller allows to ignore
+// at most the first maxstart elements.
+fn find_smallest_cycle(a: &Vec<bool>, maxstart: usize) -> Option<(usize, usize)> {
+    // custom algorithm, bruteforcy. Don't know if there is a
+    // well-known optimization.
+    // Could have used a regex like "(.+)(\1)*" to let the regexp matching
+    // find the solution too.
+
+    // Iterate over all sizes (starting from 1), get the last string
+    // of size S, and compare if all previous [S] sized strings are
+    // identical. If not, repeat for next size.
+    
+    let max = a.len();
+    for size in 1..max/2 {
+	let candidate = &a[max-size..max];
+	let mut ok = true;
+	let mut check_offset = size;
+	// iterate over the other chunks.
+	for check in a.rchunks_exact(size).skip(1) {
+	    check_offset += size;
+	    if check != candidate {
+		//eprintln!("found difference on size {size}, at offset -{check_offset}");
+		if max - check_offset > maxstart {
+		    ok = false;
+		} else {
+		    // difference was at the beginning: allowed,
+		    // but correct the exact cycle start
+		    check_offset -= size;
+		}
+
+		break;
+	    }
+	}
+	if ok {
+	    let start_cycle = max - check_offset;
+	    eprintln!("Candidate is OK for size {size} starting at {start_cycle}");
+	    return Some((start_cycle, size));
+	}
+    }
+
+    None
+    
+}
+
+
 struct Network {
     modules: HashMap<String, Module>,
 }
@@ -92,11 +212,8 @@ struct Network {
 impl Network {
     // Send the initial low pulse from Button to Broadcaster.
     // Follow the network activity until no more pulse is emitted.
-    // Return the pair of count of (Low, High) pulses sent
-    // through the network
-    fn run_button(&mut self) -> (i32, i32) {
-	let mut low_count:i32 = 0;
-	let mut high_count:i32 = 0;
+    fn run_button(&mut self) -> i32 {
+
 	let mut queue = VecDeque::<(String, String, Pulse)>::new(); // source, dest, pulse value
 
 	queue.push_back(("button".to_string(), "broadcaster".to_string(), LOW));
@@ -104,11 +221,6 @@ impl Network {
 	let mut converge=0;
 	while let Some((origin, dest, p)) = queue.pop_front() {
 	    converge += 1;
-	    if p == LOW {
-		low_count += 1;
-	    } else {
-		high_count += 1;
-	    }
 
 	    if let Some(module) = self.modules.get_mut(&dest) {
 		let next_dests = module.receive_pulse_from(p, &origin);
@@ -116,12 +228,12 @@ impl Network {
 		    queue.push_back((dest.clone(), next_name, next_pulse));
 		}
 	    } else {
-		eprintln!("destination Module name {dest} not found in network map !");
+		//eprintln!("destination Module name {dest} not found in network map !");
+		// we know, this is RX...
 	    }
 	}
 
-	eprintln!("Network need {converge} iterations to send {low_count} LOW and {high_count} HIGH");
-	(low_count, high_count)
+	return converge;
     }
 
     // perform an initial pass to find all "origins" to each modules (from the
@@ -151,6 +263,94 @@ impl Network {
 	    }
 	}
 	self.modules = final_modules;
+    }
+
+    // Perform a backward search of the final modules influencing
+    // the RX received signal.
+    fn find_rx_senders(&self, dest:&String) -> Vec<String> {
+	// Custom impl for the specific input structure.
+	// Could have hardcoded the 4 strings names at this point..
+	match dest.as_str() {
+	    "TEST" => vec!["dl".to_string(),
+			   "lh".to_string(),
+			   "lx".to_string()],
+	    "rx" => vec!["lx".to_string(),
+			 "db".to_string(),
+			 "qz".to_string(),
+			 "sd".to_string()],
+	    "lx" => vec!["lg".to_string(),
+			 "gf".to_string(),
+			 "bm".to_string(),
+			 "cp".to_string(),
+			 "xm".to_string(),
+			 "kh".to_string(),
+			 "lh".to_string(),
+			 "dl".to_string(),
+			 "zx".to_string(),
+			 "gb".to_string()],
+	    "db" => vec!["vv".to_string(),
+			 "sp".to_string(),
+			 "bh".to_string(),
+			 "kr".to_string(),
+			 "xz".to_string(),
+			 "qf".to_string(),
+			 "mq".to_string(),
+			 "zs".to_string()],
+	    _ => Vec::<String>::new(),
+	}
+			 
+    }
+
+    fn detect_rx_cycles(&mut self) {
+
+	// lx sources: all are same cycle size 4027 starting at 3891
+	//let monitor = self.find_rx_senders(&"lx".to_string());
+
+	// db sources: all are cycle size 3929 starting at 354
+	//let monitor = self.find_rx_senders(&"db".to_string());
+
+	let monitor = self.find_rx_senders(&"TEST".to_string());
+
+	let mut monitor_history = Vec::<Vec::<Pulse>>::new();
+	for _ in &monitor {
+	    monitor_history.push(Vec::<Pulse>::new());
+	}
+
+	let mut last_sent_low = false;
+	let mut last_sent_high = false;
+	// "dl" and "lh" are constant false in the first 1000 iters;
+	// need to reach higher to get first very large cycles
+	for k in 1..20000 {
+	    let converge = self.run_button();
+	    if (k % 1000) == 0 {
+		eprintln!("#{k} run converged in {converge} iterations");
+	    }
+	    let mut h_idx = 0;
+	    for m in &monitor {
+		let m = self.modules.get(m).expect("Named module should be found in the network");
+		monitor_history[h_idx].push(m.last_sent);
+		if m.last_sent == LOW {
+		    last_sent_low = true;
+		}
+		if m.last_sent == HIGH {
+		    last_sent_high = true;
+		}
+
+
+		h_idx += 1;
+	    }
+	}
+
+	if last_sent_high {
+	    for (idx, name) in monitor.iter().enumerate() {
+		let h = &monitor_history[idx];
+		eprintln!("state history of {name}:");
+		//print_bool_vec(h);
+		find_smallest_cycle(h, 5000);
+	    }
+	} else {
+	    eprintln!("*** There has never been any single LOW/HIGH pulse sent by the monitored modules");
+	}
     }
 
 }
@@ -190,14 +390,19 @@ impl Solver {
 	eprintln!("Network has {} modules",
 		  self.network.modules.len());
 	self.network.initialize_origins();
-	let mut total_l = 0;
-	let mut total_h = 0;
-	for _ in 0..1000 {
-	    let (l,h) = self.network.run_button();
-	    total_l += l;
-	    total_h += h;
-	}
-	self.total = (total_l) * (total_h);
+
+	self.network.detect_rx_cycles();
+	
+	// Bruteforcing doesn't work, who would have guessed
+	//for k in 1..200000 {
+	//    let (_,_) = self.network.run_button();
+	//    if self.network.rx_ok {
+	//	self.total = k;
+	//	eprintln!("RX correct input at iteration {k}");
+	//	break;
+	//    }
+	//}
+
     }
     
     // Returns the final string of expected output
