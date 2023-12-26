@@ -46,27 +46,15 @@ impl Brick {
 	}
     }
 
-    // Lower the Z coordinates of this brick to be at (z+1)
+    // Lower the Z coordinates of this brick to be at "z"
     fn move_at_z(&mut self, z: i32) {
-	if self.corner.2 <= z {
-	    panic!("Brick {:?} is already under z {z}", self.corner);
+	if self.corner.2 < z {
+	    eprintln!("Brick {:?} is already under z {z}", self.corner);
+	    return;
 	}
-	self.corner = (self.corner.0, self.corner.1, z+1);
+	self.corner = (self.corner.0, self.corner.1, z);
     }
 
-    // Get the explicit list of blocks coordinates directly
-    // above this bricks. Will be self.len blocks if the brick
-    // is horizontal, or 1 block if vertical.
-    fn get_extensions_up(&self) -> Vec::<(i32,i32,i32)> {
-	if self.direction.2 != 0 {
-	    vec![(self.corner.0, self.corner.1, self.corner.2 + self.len)]
-	} else {
-	    (0..self.len).map(|n| (self.corner.0 + n * self.direction.0,
-				   self.corner.1 + n * self.direction.1,
-				   self.corner.2 + n * self.direction.2))
-		.collect()
-	}
-    }
 
     // Returns the first Z on top of this brick
     fn get_z_above(&self) -> i32 {
@@ -77,7 +65,9 @@ impl Brick {
 	}
     }
 
-    // returns the set of x,y coords of the "shadow"
+    // Returns the set of x,y coords of the "shadow"
+    // Should be efficient enough as the input data seems
+    // to never have bricks with absurd high length, it's always < 5
     fn get_xy(&self) -> HashSet<(i32,i32)> {
 	if self.direction.2 != 0 {
 	    let mut h = HashSet::<(i32,i32)>::new();
@@ -94,6 +84,7 @@ impl Brick {
 
     // Do 2 bricks share a common x/y block coordinate (independant of z) ?
     fn intersects_xy_brick(&self, other:&Brick) -> bool {
+	// quicker to code but stupid and slow to compute.
 	let sxy = self.get_xy();
 	let oxy = other.get_xy();
 	!sxy.is_disjoint(&oxy)
@@ -121,20 +112,64 @@ impl PartialEq for Brick {
 impl Eq for Brick {}
 
 // Move the bricks on the ground and on top of eachother.
-fn settle_bricks(mut b: VecDeque<Brick>) -> Vec<Brick> {
+// returns a tuple with:
+// - the new list of moved bricks (roughly for bottom to top order)
+// - a vec, in same order, of a list of the indices of bricks directly suupported above this one
+// - a vec (same order) of the numer of supporting bricks below
+fn settle_bricks(mut b: VecDeque<Brick>) -> (Vec<Brick>, Vec<Vec<usize>>, Vec<i32>) {
     let mut settled = Vec::<Brick>::new();
+    let mut supports = Vec::<Vec::<usize>>::new();  // list of indices
+    let mut supported_by = Vec::<i32>::new(); // count
+
 
     // order the falling bricks from bottom to top
-    b.make_contiguous().sort_by(|a, b| b.cmp(a));
+    b.make_contiguous().sort_by(|n, m| n.cmp(m));
     // push down by starting from the bottom bricks, in
     // rough order (similar Z value will always be on different
     // x/y positions so no ambiguity or intersection)
-    while !b.is_empty() {
-	let mut brick = b.pop_front().expect("b should not be empty here");
+
+    while let Some(mut brick) = b.pop_front() {
+	eprintln!("settling brick {brick:?}");
+	let mut min_z = 1; // ground
+	// There is probably a better struct to iter
+	// with an earlier exit (settled orderded by descending z+height)
+	for s in &settled {
+	    // small optimization, wins 30% of time
+	    if s.get_z_above() < min_z {
+	    	continue;
+	    }
+
+	    // not optimal as brick.() will recompute the same thing
+	    // over. Should memoize ?
+	    if brick.intersects_xy_brick(s) {
+		min_z = cmp::max(min_z, s.get_z_above());
+	    }
+	}
+	brick.move_at_z(min_z);
+	settled.push(brick);
+	supported_by.push(0);
+	supports.push(vec![]);
+
     }
 
-    settled
+
+    // iterate again to check ALL supporting bricks at this final Z.
+    for (idx, s) in settled.iter().enumerate() {
+	// due to initial Z order, supporting -> brick -> supported
+	// will always be ordered strictly in the final settled array.
+	for (ib, below) in settled.iter().enumerate() {
+	    if ib >= idx {
+		break;
+	    }
+	    if below.get_z_above() == s.corner.2 && s.intersects_xy_brick(below) {
+		supported_by[idx] += 1;
+		supports[ib].push(idx);
+	    }
+	}
+    }
     
+    
+    (settled, supports, supported_by)
 }
 
 // Solver for this particular problem
@@ -176,8 +211,26 @@ impl Solver {
 	eprintln!("Parsed {} bricks: {:?}",
 		  bricks.len(),
 		  bricks);
-	let bricks = settle_bricks(bricks);
-	eprintln!("Settled bricks = {:?}", bricks);
+	let (bricks, supports, supported_by) = settle_bricks(bricks);
+	//eprintln!("Settled bricks = {:?}", bricks);
+	eprintln!("Settled bricks = supporting indices{:?}", supports);
+	eprintln!("Settled bricks = supported_by count{:?}", supported_by);
+
+	// can be disintegrated if supporting no bricks or each of
+	// those brick are supported by at least another one
+	for k in 0..bricks.len() {
+	    let mut disintegrable = true;
+	    for &n in &supports[k] {
+		if supported_by[n] == 1 {
+		    disintegrable = false;
+		    break;
+		}
+	    }
+	    if disintegrable {
+		eprintln!("settled brick index {k} can be disintegrated");
+		self.total += 1;
+	    }
+	}
 	
     }
 
